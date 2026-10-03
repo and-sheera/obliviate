@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Obliviate</title>
+    <meta name="description" content="Замена имён, компаний и секретов в тексте перед отправкой в нейросеть. Всё работает в браузере." />
+    <link rel="icon" type="image/png" sizes="81x81" href="/favicon.png" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <h1 class="brand"><img class="logo" src="/logo.png" alt="Obliviate" /></h1>
+
+        <span class="spacer"></span>
+
+        <button id="dictBtn" class="ghost with-ico" title="Словарь замен: что заменять в любом тексте">
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3.5A1.5 1.5 0 0 1 4.5 2H13v10H4.5A1.5 1.5 0 0 0 3 13.5z"/><path d="M3 13.5A1.5 1.5 0 0 0 4.5 15H13v-3"/><path d="M6 5h4"/></svg>
+          Словарь
+        </button>
+        <button id="copy" class="primary">Скопировать результат</button>
+      </header>
+
+      <main class="main">
+        <section id="paneHide" class="pane work">
+          <aside class="card" aria-label="Что можно заменить">
+            <div class="found-head">
+              <h2>Можно заменить</h2>
+              <span id="foundCount" class="summary"></span>
+            </div>
+            <div id="model" class="model" role="status">
+              <div class="model-line">
+                <span id="modelDot" class="dot"></span><span id="modelText">Модель не запущена</span><button id="modelRetry" class="small" hidden>Повторить</button>
+                <select id="nerMode" aria-label="Как искать имена и компании" title="Точно: три модели голосуют — реже пропускают людей и реже принимают обычные слова за имена; 154 МБ, анализ втрое дольше.&#10;Быстро: одна модель, 31 МБ.&#10;Модели скачиваются один раз и потом берутся из кеша браузера.">
+                  <option value="accurate">Точно · 3 модели</option>
+                  <option value="fast">Быстро · 1 модель</option>
+                </select>
+              </div>
+              <div id="modelBar" class="bar" hidden><i></i></div>
+            </div>
+            <label class="search">
+              <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+              <input id="foundSearch" type="search" placeholder="Поиск среди найденного" aria-label="Поиск среди найденного" autocomplete="off" />
+            </label>
+            <div id="typeFilter" class="filters" role="group" aria-label="Фильтр по типу"></div>
+            <div class="table-wrap">
+              <table id="found">
+                <thead>
+                  <tr>
+                    <th class="c"><label class="hit" title="Заменить все показанные (у компаний и мест замену придумываете вы)"><input type="checkbox" id="foundAll" aria-label="Заменить все показанные" /></label></th>
+                    <th aria-sort="none"><button class="th" data-sort="type">Тип</button></th>
+                    <th aria-sort="none"><button class="th" data-sort="word">Слово</button></th>
+                    <th aria-sort="none" class="n"><button class="th" data-sort="n" aria-label="Сколько раз встречается" title="Сколько раз встречается">×</button></th>
+                    <th>Замена</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+              <p id="foundEmpty" class="empty-note"></p>
+            </div>
+            <div id="joinBar" class="join-bar" role="region" aria-label="Объединение строк" hidden>
+              <span id="joinCount"></span>
+              <span class="spacer"></span>
+              <button id="joinCancel" class="small">Отмена</button>
+              <button id="joinGo" class="primary small" title="Одна строка и одна замена на все выбранные: присоединяются к верхней из них">Объединить</button>
+            </div>
+            <section id="occ" class="occ" aria-label="Все вхождения слова" hidden>
+              <div class="occ-head">
+                <b id="occTitle"></b>
+                <span id="occPos" class="muted"></span>
+                <span class="spacer"></span>
+                <button id="occPrev" class="icon sm" aria-label="Предыдущее вхождение" title="Предыдущее (↑)"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 10 4-4 4 4"/></svg></button>
+                <button id="occNext" class="icon sm" aria-label="Следующее вхождение" title="Следующее (↓)"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
+                <button id="occClose" class="icon sm" aria-label="Закрыть список вхождений" title="Закрыть (Esc)"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg></button>
+              </div>
+              <ul id="occList" class="occ-list" tabindex="0" role="listbox" aria-label="Вхождения"></ul>
+            </section>
+            <p class="foot">Галочка — заменить везде, во всех падежах. Клик по слову — найти в тексте. Значок слияния — объединить строки.</p>
+          </aside>
+          <div id="split" class="split" role="separator" aria-orientation="vertical" aria-label="Ширина списка «Можно заменить»" tabindex="0" title="Потяните, чтобы изменить ширину. Двойной клик — вернуть как было"></div>
+          <div class="card">
+            <div class="toolbar">
+              <button id="paste" class="small">Вставить</button>
+              <button id="open" class="small" title="Или перетащите файл в окно">Открыть файл</button>
+              <input id="file" type="file" multiple hidden />
+              <button id="example" class="small">Пример</button>
+              <button id="clear" class="small">Очистить</button>
+              <span class="spacer"></span>
+              <span class="muted small-text">Выделите слово в тексте или наведите на подчёркнутое — появится поле замены</span>
+            </div>
+            <div class="editor-wrap">
+              <div id="diffHide" class="editor"></div>
+              <div id="emptyHide" class="empty">
+                <h3>Вставьте текст</h3>
+                <p>Письмо, переписку или документ. Имена, компании и секреты подчеркнутся — замените то, что нужно, на что хотите. Или перетащите сюда файл: .txt, .srt, .md, .csv и любой другой текстовый. Всё работает в браузере, ничего не отправляется.</p>
+                <div class="row">
+                  <button id="emptyPaste" class="primary">Вставить из буфера</button>
+                  <button id="emptyOpen">Открыть файл</button>
+                  <button id="emptyExample">Показать пример</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </section>
+
+      </main>
+    </div>
+
+    <dialog id="dictDlg" aria-labelledby="dictDlgTitle">
+      <div class="dlg-head">
+        <h2 id="dictDlgTitle">Словарь замен</h2>
+        <button id="closeDict" class="icon" aria-label="Закрыть">
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <div class="dlg-body">
+        <section>
+          <p class="hint">Заменяется в любом тексте сразу и во всех падежах: «Сбербанк → Комбанк» превратит «Сбербанка» в «Комбанка». В конкретном тексте замену можно снять галочкой.</p>
+          <form id="dictForm" class="form">
+            <label class="field">Что заменять
+              <input id="dictTerm" placeholder="ФИО, компания, проект…" autocomplete="off" />
+            </label>
+            <label class="field">Тип
+              <select id="dictType"></select>
+            </label>
+            <label class="field">На что заменять
+              <input id="dictTo" autocomplete="off" />
+            </label>
+            <button class="primary" type="submit">Добавить</button>
+          </form>
+          <ul id="dict" class="plain" data-empty="Пока пусто."></ul>
+        </section>
+      </div>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

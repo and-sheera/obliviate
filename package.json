@@ -1,0 +1,25 @@
+{
+  "name": "obliviate",
+  "private": true,
+  "description": "Замена имён, компаний и секретов в тексте перед отправкой в нейросеть, всё в браузере",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run --exclude tests/ner.bench.ts --exclude tests/big.bench.ts",
+    "test:ner": "vitest run tests/ner.bench.ts",
+    "test:big": "vitest run tests/big.bench.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.0",
+    "monaco-editor": "^0.56.0"
+  }
+}
