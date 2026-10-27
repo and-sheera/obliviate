@@ -3,6 +3,7 @@ export const TYPES = [
   'EMAIL', 'PHONE', 'TELEGRAM',
   'IP', 'MAC', 'HOST',
   'API_KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'LOGIN', 'PRIVATE_KEY',
+  'CARD', 'DOC',
 ] as const;
 export type Type = (typeof TYPES)[number];
 
@@ -12,6 +13,7 @@ export const TYPE_LABEL: Record<Type, string> = {
   EMAIL: 'Почта', PHONE: 'Телефон', TELEGRAM: 'Телеграм',
   IP: 'IP-адрес', MAC: 'MAC-адрес', HOST: 'Сервер',
   API_KEY: 'Ключ доступа', TOKEN: 'Токен', SECRET: 'Секрет', PASSWORD: 'Пароль', LOGIN: 'Логин', PRIVATE_KEY: 'Закрытый ключ',
+  CARD: 'Номер карты', DOC: 'Номер документа',
 };
 
 export type Source = 'manual' | 'dict' | 'regex' | 'ner';

@@ -379,18 +379,16 @@ export const corpus: Case[] = [
   },
 
   // ───────────── name heuristics (no dictionary, no model) ─────────────
+  // companies are not looked for: whatever the form, they are left alone (the dictionary and a selection are the user's)
   {
-    name: 'heuristic: legal form + quoted or bare name',
+    name: 'companies: a legal form and a name are left alone',
     text: 'Договор между ООО «Ромашка» и ПАО Сбербанк, а также АО "Северсталь-Плюс" и ЗАО «Вектор Про».',
-    hide: ['Ромашка', 'Сбербанк', 'Северсталь-Плюс', 'Вектор Про'],
-    keep: ['Договор между ООО «', '» и ПАО ', ', а также АО "', '" и ЗАО «', '».'],
-    has: ['[ORG_1]', '[ORG_4]'],
+    noop: true,
   },
   {
-    name: 'heuristic: "компания X" in cases',
+    name: 'companies: "компания X" is left alone',
     text: 'Пишу от компании Ланит. Мы работаем с фирмой Вектор и в организации Техносфера, а компания Сибирские Дали растёт.',
-    hide: ['Ланит', 'Вектор', 'Техносфера', 'Сибирские Дали'],
-    keep: ['Пишу от компании ', 'Мы работаем с фирмой ', ' и в организации ', ', а компания '],
+    noop: true,
   },
   {
     name: 'heuristic: surname with initials, both orders',

@@ -13,7 +13,7 @@ function lookSame(word: string): string {
 }
 
 /** Identity of a word across case forms: Иванов/Иванову/Ивановым → иванов, Сергей/Сергея → серг */
-function keyStem(word: string): string {
+export function keyStem(word: string): string {
   let w = fold(lookSame(word));
   if (!CYR.test(w)) return w;
   for (let i = 0; i < 3; i++) {
@@ -71,6 +71,8 @@ export function suggest(type: Type, value: string, n = 1): string {
     case 'LOGIN': return `user${n}`;
     case 'PASSWORD': case 'SECRET': return '********';
     case 'PRIVATE_KEY': return '[закрытый ключ]';
+    case 'CARD': return '**** **** **** ' + String(n).padStart(4, '0');
+    case 'DOC': return `[номер документа ${n}]`;
     case 'API_KEY': case 'TOKEN': return `${/^[A-Za-z]+[-_]/.exec(value)?.[0] ?? ''}…XXXX`; // "sk-…XXXX": the kind of key stays readable
     default: return '';
   }

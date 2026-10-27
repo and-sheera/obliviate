@@ -141,15 +141,7 @@ const NETWORK: Rule[] = [
 
 // ───────────── names by form (no model, no dictionary) ─────────────
 
-const LEGAL = 'ООО|ОАО|ЗАО|ПАО|АО|НКО';
-const CAP = '[А-ЯЁA-Z][\\p{L}\\p{N}-]+';
 const SURNAME = '[А-ЯЁ][а-яё]{2,}(?:-[А-ЯЁ][а-яё]+)?';
-const OPEN_Q = '[«"“„]';
-const QUOTED = '([^»"”“\\n]{2,60})[»"”]';
-
-// Words that open "компании X" or "X А." without being a name
-const ROLES = /^(?:заказчик|исполнител|подрядчик|субподрядчик|поставщик|покупател|продав|арендатор|арендодател|клиент|сторон|агент|принципал|лицензиар|лицензиат|работодател|работник|оператор|пользовател|участник)/i;
-const okCompany: Ok = (v) => !PLACEHOLDER.test(v) && !ROLES.test(v);
 
 // "Приложение А.", "Вариант В.", "Витамин С.", "Корпус Б." — a noun + letter, not a surname + initial.
 // The noun may take a short ending, but not a surname suffix: "Шаг А." is not a name, "Шагов А." is.
@@ -165,27 +157,6 @@ const NOT_SURNAMES = new RegExp(
 const okSurname: Ok = (v) => !NOT_SURNAMES.test(v.split(/\s/)[0]);
 
 const NAMES: Rule[] = [
-  // ООО «Ромашка», АО "Северсталь"
-  { re: new RegExp(`(?<![\\p{L}\\p{N}])(?:${LEGAL})[ \\t]*${OPEN_Q}${QUOTED}`, 'gdu'), type: 'ORG', prio: K, group: 1, ok: okNotPlaceholder },
-  // ПАО Сбербанк
-  { re: new RegExp(`(?<![\\p{L}\\p{N}])(?:${LEGAL})[ \\t]+(${CAP})`, 'gdu'), type: 'ORG', prio: K, group: 1, ok: okCompany },
-  // компания «Альфа Логистик», фирмой «Стройком», ГК «Самолёт», банк «Открытие», фонд «Подари жизнь»
-  {
-    re: new RegExp(
-      `(?<![\\p{L}\\p{N}])(?:[кК]омпани\\p{L}*|[фФ]ирм\\p{L}*|[оО]рганизаци\\p{L}*|[кК]орпораци\\p{L}*|ГК|[гГ]рупп\\p{L}*[ \\t]+компаний|` +
-        `[хХ]олдинг\\p{L}*|[фФ]онд\\p{L}*|[бБ]анк\\p{L}*|[аА]гентств\\p{L}*|[сС]туди\\p{L}*)[ \\t]*${OPEN_Q}${QUOTED}`,
-      'gdu',
-    ),
-    type: 'ORG', prio: K, group: 1, ok: okNotPlaceholder,
-  },
-  // компании Ланит, Компания Яндекс, фирмой Вектор, в организации Сибирские Дали
-  {
-    re: new RegExp(
-      `(?<![\\p{L}\\p{N}])(?:[кК]омпани(?:я|и|ю|ей)|[фФ]ирм(?:а|ы|у|ой|е)|[оО]рганизаци(?:я|и|ю|ей)|[кК]орпораци(?:я|и|ю|ей))[ \\t]+(${CAP}(?:[ \\t]+[А-ЯЁ][\\p{L}-]+)?)`,
-      'gdu',
-    ),
-    type: 'ORG', prio: K, group: 1, ok: okCompany,
-  },
   // ИП Сидоров, ИП Семенова Ольга Викторовна
   { re: new RegExp(`(?<![\\p{L}\\p{N}])ИП[ \\t]+(${SURNAME}(?:[ \\t]+[А-ЯЁ][а-яё]+){0,2})`, 'gdu'), type: 'PERSON', prio: K, group: 1 },
   // Иванов И.И., Петровой А. С.  (the space after the last initial is not part of the name)
@@ -325,6 +296,52 @@ function cliUser(text: string, out: Span[]): void {
   }
 }
 
+// ───────────── numbers with a check digit: cards, ИНН, СНИЛС, ОГРН; passports by context ─────────────
+
+const dig = (v: string) => [...v.replace(/\D/g, '')].map(Number);
+const wsum = (a: number[], w: number[]) => w.reduce((t, x, i) => t + x * a[i], 0);
+const luhn = (a: number[]) => a.reduceRight((t, x, i) => { const d = (a.length - 1 - i) % 2 ? x * 2 : x; return t + (d > 9 ? d - 9 : d); }, 0) % 10 === 0;
+const innOk = (a: number[]) => {
+  const c = (w: number[]) => (wsum(a, w) % 11) % 10;
+  if (a.length === 10) return c([2, 4, 10, 3, 5, 9, 4, 6, 8]) === a[9];
+  return a.length === 12 && c([7, 2, 4, 10, 3, 5, 9, 4, 6, 8]) === a[10] && c([3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8]) === a[11];
+};
+const snilsOk = (a: number[]) => {
+  if (a.length !== 11) return false;
+  const t = wsum(a, [9, 8, 7, 6, 5, 4, 3, 2, 1]);
+  return (t < 100 ? t : t % 101 % 100) === a[9] * 10 + a[10];
+};
+// ОГРН: the 13-digit number mod 11, ОГРНИП: the 15-digit one mod 13, last digit of the remainder
+const ogrnOk = (v: string) => {
+  const d = v.replace(/\D/g, '');
+  return (d.length === 13 || d.length === 15) && Number(BigInt(d.slice(0, -1)) % BigInt(d.length === 13 ? 11 : 13)) % 10 === Number(d.at(-1));
+};
+
+const DIGITS = /(?<![\p{L}\p{N}_.,+-])\d(?:[ -]?\d){8,22}(?![\p{L}\p{N}_]|[.,]\d)/gdu;
+const DOC_CONTEXT = /(?:инн|кпп|огрн(?:ип)?|снилс|паспорт\p{L}*|серия|полис\p{L}*|омс|карт\p{L}*|счёт\p{L}*|счет\p{L}*)[^\n\d]{0,30}$/iu;
+
+function documents(text: string, out: Span[]): void {
+  for (const m of text.matchAll(DIGITS)) {
+    const [s, e] = m.indices![0]!;
+    const a = dig(m[0]), ctx = DOC_CONTEXT.exec(text.slice(Math.max(0, s - 40), s))?.[0] ?? '';
+    const word = (re: RegExp) => re.test(ctx);
+    const grouped = !/^\d+$/.test(m[0]); // "1234 5678 9012 3456", "222-643-344 36": a person typed it as a number
+    let type: Type | null = null;
+    if (a.length >= 13 && a.length <= 19 && luhn(a) && (grouped || word(/карт/i) || (a.length === 16 && a[0] >= 2 && a[0] <= 6)) && !word(/счёт|счет|огрн/i)) type = 'CARD';
+    else if (a.length === 11 && snilsOk(a) && (grouped || word(/снилс/i))) type = 'DOC';
+    else if (a.length === 12 && innOk(a)) type = 'DOC';
+    else if (a.length === 10 && word(/инн/i) && innOk(a)) type = 'DOC';
+    else if ((a.length === 13 || a.length === 15) && word(/огрн/i) && ogrnOk(m[0])) type = 'DOC';
+    else if (a.length === 9 && word(/кпп/i)) type = 'DOC';
+    else if (a.length === 10 && word(/паспорт|серия/i)) type = 'DOC';
+    if (type) out.push(mk(s, e, type, text.slice(s, e), P_GENERIC - 1));
+  }
+  // "серия 77 14, номер 345678"
+  for (const m of text.matchAll(/(?:паспорт\p{L}*|серия|серию)[^\n\d]{0,25}(\d{2}[ ]?\d{2})[^\n\d]{1,12}?(\d{6})(?!\d)/giud)) {
+    for (const g of [1, 2]) { const [s, e] = m.indices![g]!; out.push(mk(s, e, 'DOC', text.slice(s, e), P_GENERIC - 1)); }
+  }
+}
+
 // ───────────── overlap resolution ─────────────
 
 /**
@@ -376,6 +393,7 @@ export function detect(text: string): Span[] {
     out.push(c);
   }
   run(text, NETWORK, out);
+  documents(text, out);
   run(text, NAMES, out);
   return resolve(out);
 }

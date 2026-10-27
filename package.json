@@ -8,9 +8,10 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run --exclude tests/ner.bench.ts --exclude tests/big.bench.ts",
+    "test": "vitest run --exclude tests/ner.bench.ts --exclude tests/big.bench.ts --exclude tests/ext.bench.ts",
     "test:ner": "vitest run tests/ner.bench.ts",
-    "test:big": "vitest run tests/big.bench.ts"
+    "test:big": "vitest run tests/big.bench.ts",
+    "test:ext": "vitest run tests/ext.bench.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.1",

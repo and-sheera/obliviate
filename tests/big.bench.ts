@@ -38,9 +38,6 @@ const rows = (c: BigCase, e: Entity, spans: Span[]) => {
   const others = c.entities.filter((x) => x !== e).flatMap((x) => x.forms).filter((f) => !e.forms.some((g) => g.includes(f)));
   return new Set(spans.filter((s) => e.forms.some((f) => over(s, c.text, f)) && !others.some((f) => over(s, c.text, f))).map((s) => entityKey(s.type, s.value)));
 };
-/** ООО «X», ПАО X, компания X: the rules see it without the model */
-const marked = (text: string, form: string) =>
-  at(text, form).some((i) => /(?:ООО|ПАО|ЗАО|ОАО|АО|ГК|компани\p{L}*)[ \t]*«?$|«$/u.test(text.slice(Math.max(0, i - 24), i)));
 const pct = (a: number, b: number) => (b ? `${a}/${b} ${String(Math.round((a / b) * 100)).padStart(3)}%` : '—');
 
 type Tally = Record<string, [number, number]>;
@@ -48,9 +45,9 @@ const add = (t: Tally, k: string, ok: boolean) => { const v = (t[k] ??= [0, 0]);
 
 function check(c: BigCase, spans: Span[], t: Tally, log: string[]) {
   const lines: string[] = [];
-  for (const e of c.entities) {
+  for (const e of c.entities.filter((e) => e.type !== 'ORG')) { // companies are not looked for
     const missed = e.forms.filter((f) => !hidden(c.text, f, spans));
-    const kind = c.english ? `${e.type} (англ.)` : e.type === 'ORG' ? (marked(c.text, e.forms[0]) ? 'ORG с ООО/«»' : 'ORG без признаков') : e.type;
+    const kind = c.english ? `${e.type} (англ.)` : e.type;
     add(t, kind, !missed.length);
     if (missed.length) lines.push(`   ✗ ${e.type.padEnd(6)} ${missed.join(', ')}`);
     else if (e.forms.length > 1) {
@@ -91,7 +88,7 @@ describe('long texts in many styles', () => {
         log.push(`${spans.length ? '•' : '✓'} [обычный] ${n.title}`, ...spans.map((s) => `   ⚠ лишнее ${s.type}: "${s.text}" (${s.source})`));
         if (!pipes.length) expect.soft(spans.map((s) => s.text), `${n.title}: rules found something`).toEqual([]);
       }
-      const order = ['PERSON', 'ORG с ООО/«»', 'ORG без признаков', 'LOC', 'секреты и контакты', 'падежи в одной строке', 'точность (найдено по делу)', 'обычные тексты без находок', 'PERSON (англ.)', 'ORG (англ.)', 'LOC (англ.)'];
+      const order = ['PERSON', 'LOC', 'секреты и контакты', 'падежи в одной строке', 'точность (найдено по делу)', 'обычные тексты без находок', 'PERSON (англ.)', 'LOC (англ.)'];
       console.log([
         '', `══════ ${mode} ${models.length ? `(${models.join(' + ')})` : ''} · ${((performance.now() - t0) / 1000).toFixed(1)} с ══════`,
         ...order.filter((k) => t[k]).map((k) => `  ${k.padEnd(28)} ${pct(...t[k])}`),

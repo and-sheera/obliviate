@@ -7,7 +7,8 @@ export interface RawToken {
   word: string; // wordpiece, continuation pieces start with '##'
 }
 
-const CLASS: Record<string, Type> = { PER: 'PERSON', ORG: 'ORG', MEDIA: 'ORG', LOC: 'LOC', GEOPOLIT: 'LOC' };
+// the models also tag organisations (ORG, MEDIA): they are not looked for, so those words are plain words here
+const CLASS: Record<string, Type> = { PER: 'PERSON', LOC: 'LOC', GEOPOLIT: 'LOC' };
 
 /** groups scoring below this are noise */
 export const MIN_SCORE = 0.7;
@@ -28,7 +29,7 @@ const NOT_NAMES = new RegExp(`^(?:${OPENERS})$`, 'iu');
 const SPECIAL = /^\[(?:CLS|SEP|PAD|MASK)\]$/;
 
 /** capitalised ordinary words the model takes for names or companies: roles, form labels, family, acronyms */
-const STOP = new Set(
+export const STOP = new Set(
   (
     // family
     'мама мамы маме маму папа папы папе папу бабушка дедушка сын дочь брат сестра тетя дядя муж жена ' +
@@ -51,11 +52,11 @@ const STOP = new Set(
     'тк ук коап апк гпк hr pr it егэ огэ дтп пк по ос ии чп то'
   ).split(' '),
 );
-const norm = (w: string) => w.toLowerCase().replace(/ё/g, 'е').replace(/[^\p{L}]/gu, '');
-const isStop = (w: string) => STOP.has(norm(w)) || NOT_NAMES.test(norm(w));
+export const norm = (w: string) => w.toLowerCase().replace(/ё/g, 'е').replace(/[^\p{L}]/gu, '');
+export const isStop = (w: string) => STOP.has(norm(w)) || NOT_NAMES.test(norm(w));
 
 /** words that are names only next to a patronymic/surname or in an address: "Вера Павловна", "Слава, привет" — not "Вера в себя" */
-const AMBIGUOUS = new Set('вера надежда любовь лев роза слава мир победа звезда правда заря радость сила воля жизнь весна мила лада'.split(' '));
+export const AMBIGUOUS = new Set('вера надежда любовь лев роза слава мир победа звезда правда заря радость сила воля жизнь весна мила лада власть власти властью'.split(' '));
 
 /** 1 UTF-16 unit → 1 unit, so offsets stay valid: lowercase, й→и, ё→е */
 function fold(s: string): string {
@@ -95,7 +96,7 @@ function alignWords(text: string, tokens: RawToken[]): Word[] {
 
 const isLower = (w: string) => w[0] === w[0].toLowerCase() && w[0] !== w[0].toUpperCase();
 /** words the model glues to an entity: prepositions ("С Озоном", "Про Тимофея", "Северсталь и") and what opens a spoken cue ("Там Кирилл", "Вот Лёха") */
-const FUNCTION_WORDS = new Set(
+export const FUNCTION_WORDS = new Set(
   ('и в во с со на по про о об обо у к ко от до из за для при без а но или ' +
     'там тут здесь вот вон ну да нет так это ещё уже потом тогда сейчас кстати короче слушай значит просто даже тоже только вообще ' +
     // not «ли»: Ли is a surname
@@ -122,9 +123,6 @@ function tidy(text: string, s: number, e: number, type: Type): [number, number] 
   if (v.length < 2 || LEGAL_FORM.test(v)) return null;
   if (!/[\u0400-\u04FF]/.test(v) && !(english(lineAt(text, s)) && v.split(/\s+/).every((w) => /^[A-Z][a-z]+(?:-[A-Z][a-z]+)*$/.test(w)))) return null;
   if (v.includes('№') || /^-\d/.test(text.slice(e)) || /-\d+$/.test(v)) return null; // "Договор № 17", "ИВТ-21"
-  if (type === 'ORG' && !/\p{Lu}/u.test(v)) return null; // "страхового возмещения"
-  // a heading in capitals ("ХАРАКТЕРИСТИКА", "РЕКВИЗИТЫ И ПОДПИСИ СТОРОН") is not a company; short acronyms (МТС) and "ООО «X»" (rules) are safe
-  if (type === 'ORG' && v.replace(/[^\p{L}]/gu, '').length >= 6 && !/\p{Ll}/u.test(lineAt(text, s))) return null;
   if (b - a === 1 && AMBIGUOUS.has(norm(v)) && !/^[ \t]*[,!]/.test(text.slice(e))) return null;
   return [s, e];
 }

@@ -9,9 +9,11 @@ import '../node_modules/monaco-editor/esm/vs/editor/contrib/find/browser/findCon
 import EditorWorker from '../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker';
 
 import { collect } from './core/mask';
+import { guess } from './core/guess';
 import { entityKey, replace, suggest, type Choice } from './core/replace';
 import { justName, similarKeys } from './core/names';
-import { loadDict, loadSession, saveDict, saveSession, type KV, type Pick } from './core/storage';
+import { deleteTagSession, listSessions, loadDict, loadSession, saveDict, saveSession, saveTagSession, type KV, type Pick, type TagSession } from './core/storage';
+import { formRank, newTable, tagFor, untag, type TagTable, type Untagged } from './core/tags';
 import { TYPES, TYPE_LABEL, type DictEntry, type Span, type Term, type Type } from './core/types';
 import { Ner } from './ner/client';
 
@@ -54,8 +56,20 @@ let picks = new Map<string, Pick>();
 let terms: Term[] = [];
 /** строки, объединённые вручную («Зида» → «Зина», опечатка): ключ слова → ключ строки, к которой его присоединили */
 let aliases = new Map<string, string>();
-/** новый текст — с чистого листа (словарь остаётся) */
-const forget = () => { picks = new Map(); terms = []; aliases = new Map(); selected = new Set(); activeKey = ''; };
+/** новый текст — с чистого листа (словарь остаётся); в режиме тегов решения принадлежат сессии и остаются */
+const forget = () => { if (mode === 'manual') { picks = new Map(); terms = []; aliases = new Map(); } selected = new Set(); activeKey = ''; };
+
+// «Вручную»: человек сам выбирает замены. «Теги»: всё найденное заменяется тегами [PERSON_1|ю], ответ нейросети возвращается обратно (src/core/tags.ts).
+// Теги живут в сессии: у неё своя таблица, решения по строкам и история сообщений
+type Mode = 'manual' | 'tags';
+type Tab = 'prompt' | 'reply' | 'history';
+const MODE = 'obliviate:mode', SESS = 'obliviate:sess', INSTR = 'obliviate:instr';
+let mode: Mode = st.getItem(MODE) === 'tags' ? 'tags' : 'manual';
+let tab: Tab = 'prompt';
+let sess: TagSession | null = null; // сессия, с которой работаем (режим тегов)
+let sessions: TagSession[] = [];
+/** таблица сессии плюс то, что добавил этот текст: сессии она достаётся, когда текст скопирован, и номера становятся окончательными */
+let tagWork: TagTable = newTable();
 
 // ───────────── editors ─────────────
 const dark = matchMedia('(prefers-color-scheme: dark)');
@@ -91,10 +105,13 @@ function makeDiff(el: HTMLElement) {
 }
 
 const hide = makeDiff($('#diffHide'));
+const rep = makeDiff($('#diffReply')); // ответ нейросети слева, он же с возвращёнными словами справа (режим тегов)
 monaco.editor.setTheme(theme());
 dark.addEventListener('change', () => monaco.editor.setTheme(theme()));
 const marks = hide.editor.createDecorationsCollection([]);
 const marksBack = hide.diff.getModifiedEditor().createDecorationsCollection([]); // замены в «Что уйдёт в нейросеть»
+const repMarks = rep.editor.createDecorationsCollection([]);
+const repBack = rep.diff.getModifiedEditor().createDecorationsCollection([]);
 
 const setValue = (m: monaco.editor.ITextModel, v: string) => { if (m.getValue() !== v) m.setValue(v); };
 // Замена текста пользователя с возможностью отмены (Ctrl/⌘+Z), чтобы «Очистить» и «Вставить» не стирали работу безвозвратно
@@ -105,6 +122,7 @@ const replaceText = (m: monaco.editor.ITextModel, v: string) =>
 let nerFor = ''; // the text the spans below belong to
 let nerList: Span[] = [];
 let nerDone = ''; // the text the analysis finished for (partial results don't count: they aren't saved)
+let guessed = { text: '', spans: [] as Span[] }; // names found without a model (src/core/guess.ts), for the text they belong to; used in the mode without a model
 
 // Полоса состояния модели: загрузка → запуск → анализ текста по частям → готово
 function setModel(state: 'loading' | 'busy' | 'ready' | 'error' | 'off', text: string, pct?: number) {
@@ -117,9 +135,10 @@ function setModel(state: 'loading' | 'busy' | 'ready' | 'error' | 'off', text: s
   $('#modelRetry').hidden = state !== 'error';
 }
 let nerTook = ''; // сколько занял последний анализ: по этому числу видно, помогло ли ускорение
-const nerIdle = () => setModel('ready', nerFor && nerFor === hide.original.getValue() ? `Модель готова · имён и компаний: ${nerList.filter((x) => x.source === 'ner').length}${nerTook}` : 'Модель готова');
+const nerIdle = () => setModel('ready', nerFor && nerFor === hide.original.getValue() ? `Модель готова · имён и мест: ${nerList.filter((x) => x.source === 'ner').length}${nerTook}` : 'Модель готова');
 
 const ner = new Ner((state, info) => {
+  if (nerMode.value === 'none') return; // a worker that was stopped by switching to the mode without a model
   if (state === 'loading') {
     // 100% скачано, но движок ещё собирается — показываем это отдельно, иначе кажется, что всё зависло
     if (info === '100%') setModel('loading', 'Запуск модели…');
@@ -130,18 +149,25 @@ const ner = new Ner((state, info) => {
 });
 $('#modelRetry').onclick = () => { ner.unload(); ner.load().catch(() => {}); };
 
-// «Точно» (по умолчанию) — три модели голосуют (см. nerSpans), «Быстро» — одна; выбор в полосе модели, запоминается
+// «Без модели» (по умолчанию) — словарь и правила (src/core/guess.ts), ничего не скачивается; «Быстро» — одна модель;
+// «Точно» — три модели голосуют (см. nerSpans). Выбор в полосе модели, запоминается
 const NER_MODE = 'obliviate:nerMode';
-const NER_MODELS: Record<string, string[]> = { fast: ['ner'], accurate: ['ner', 'ner-c3-v2', 'ner-conv'] };
+const NER_MODELS: Record<string, string[]> = { none: [], fast: ['ner'], accurate: ['ner', 'ner-c3-v2', 'ner-conv'] };
 const nerMode = $<HTMLSelectElement>('#nerMode');
-nerMode.value = st.getItem(NER_MODE) === 'fast' ? 'fast' : 'accurate';
+const savedMode = st.getItem(NER_MODE) ?? '';
+nerMode.value = savedMode in NER_MODELS ? savedMode : 'none';
 ner.models = NER_MODELS[nerMode.value];
+/** the mode without a model: found at once, nothing to load */
+function noModel() {
+  setModel('ready', `Без модели · имён и мест: ${guessed.spans.length}`);
+}
 nerMode.onchange = () => {
   st.setItem(NER_MODE, nerMode.value);
   ner.models = NER_MODELS[nerMode.value];
   nerFor = nerDone = ''; nerList = [];
+  const none = nerMode.value === 'none';
   ner.unload();
-  ner.load().catch(() => {});
+  if (none) noModel(); else ner.load().catch(() => {});
   refresh();
 };
 
@@ -154,7 +180,7 @@ const runNer = debounce(async () => {
     const spans = await ner.detect(text, (part, done, total) => {
       if (hide.original.getValue() !== text) return; // текст уже изменили — эти части устарели
       nerFor = text; nerList = part;
-      setModel('busy', `Анализ текста: ${done} из ${total} · имён и компаний: ${part.length}`, Math.round((done / total) * 100));
+      setModel('busy', `Анализ текста: ${done} из ${total} · имён и мест: ${part.length}`, Math.round((done / total) * 100));
       // длинный текст: не перерисовываем всё на каждую часть, а лишь несколько раз в секунду
       if (done === total || performance.now() - lastNerPaint > 250) { lastNerPaint = performance.now(); refresh(); }
     });
@@ -199,7 +225,7 @@ let query = '';
 let typeFilter: Type | '' = '';
 let sort: { col: SortCol; dir: 1 | -1 } | null = null;
 // Секреты: если их не заменить, утечка самая опасная — такие строки подсвечиваем красным
-const DANGEROUS = new Set<Type>(['API_KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PRIVATE_KEY']);
+const DANGEROUS = new Set<Type>(['API_KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PRIVATE_KEY', 'CARD']);
 
 const replaced = (g: Group) => g.on && !!g.to.trim();
 const keyOf = (sp: Span) => { const k = entityKey(sp.type, sp.value); return aliases.get(k) ?? k; };
@@ -211,8 +237,11 @@ const suggestFor = (g: Group) => suggest(g.sp.type, g.base, groups.filter((x) =>
 /** форма, для которой написана замена: из неё склоняются остальные */
 const fromOf = (g: Group) => picks.get(g.key)?.from ?? g.dict?.term ?? g.base;
 
-/** заголовок строки: самая короткая форма (обычно именительный падеж); из равных — известное имя: в «Зиде / Зины» опечатка скорее «Зиде» */
-const better = (form: string, base: string) => form.length < base.length || (form.length === base.length && justName(form) && !justName(base));
+/** заголовок строки: форма, больше всего похожая на именительный падеж («Мария», а не «Марии»), из равных — самая короткая; из равных — известное имя: в «Зиде / Зины» опечатка скорее «Зиде» */
+const better = (form: string, base: string) => {
+  const a = formRank(form), b = formRank(base);
+  return a < b || (a === b && (form.length < base.length || (form.length === base.length && justName(form) && !justName(base))));
+};
 
 function buildGroups() {
   byKey = new Map();
@@ -228,11 +257,13 @@ function buildGroups() {
     const d = dictFor(key), p = picks.get(key);
     // слово из словаря показываем так, как оно там записано: «Сбербанк → Комбанк», а не «Сбербанка → Комбанк»
     byKey.set(key, {
-      key, sp, n: 1, base: d?.term ?? sp.text, dict: d, to: p?.to ?? d?.replacement ?? '', on: p ? p.on : !!d?.replacement,
+      key, sp, n: 1, base: d?.term ?? sp.text, dict: d, to: mode === 'tags' ? '' : p?.to ?? d?.replacement ?? '', on: p ? p.on : mode === 'tags' || !!d?.replacement,
       conf: confOf(sp), forms: new Set([form]), plain: false, members: new Set([entityKey(sp.type, sp.value)]), alike: [],
     });
   }
   groups = [...byKey.values()];
+  // в режиме тегов замена — тег; нумеруются только включённые строки, чтобы выключенные не съедали номера
+  if (mode === 'tags') for (const g of groups) g.to = g.on ? tagFor(tagWork, g.key, g.sp.type, g.base, g.base) : '';
   for (const g of groups) g.plain = g.sp.type === 'PERSON' && !g.dict && !chosen.has(g.key) && justName(g.base);
   // похожие строки одного типа — кандидаты на объединение (сравниваем каждое слово строки, их немного)
   for (const [i, a] of groups.entries()) {
@@ -246,7 +277,8 @@ function choiceFor(sp: Span): Choice | null {
   const g = byKey.get(keyOf(sp))!;
   if (!replaced(g)) return null;
   outKeys.push(g.key);
-  return { to: g.to, from: fromOf(g) };
+  // from = sp.text: тег уже содержит падеж (окончание после «|»), склонять его не нужно
+  return mode === 'tags' ? { to: tagFor(tagWork, g.key, g.sp.type, g.base, sp.text), from: sp.text } : { to: g.to, from: fromOf(g) };
 }
 
 function refresh() {
@@ -254,7 +286,12 @@ function refresh() {
   const text = raw.normalize('NFC');
   // "ё" as е + ◌̈ (text from PDFs on macOS) looks the same but breaks the dictionary and the model; the change event calls refresh again
   if (text !== raw) return void replaceText(hide.original, text);
-  spans = collect(text, { dict: [...dict, ...terms], extra: nerFor === text ? nerList : [] });
+  // without a model the names come from guess() at once; with one, from the model
+  const none = nerMode.value === 'none';
+  if (none && guessed.text !== text) guessed = { text, spans: guess(text) };
+  spans = collect(text, { dict: [...dict, ...terms], extra: none ? guessed.spans : nerFor === text ? nerList : [] });
+  if (none) noModel();
+  tagWork = structuredClone(sess?.tags ?? newTable());
   buildGroups();
   outKeys = [];
   const res = replace(text, spans, choiceFor);
@@ -267,10 +304,17 @@ function refresh() {
   if (restored) saveSoon();
 }
 let restored = false; // пока сохранённый текст не прочитан, не сохраняем: пустой стартовый текст затёр бы его
-const saveSoon = debounce(() => {
+function saveNow() {
+  if (!restored) return;
+  if (mode === 'tags') {
+    if (!sess) return;
+    Object.assign(sess, { draft: hide.original.getValue(), reply: rep.original.getValue(), picks: [...picks], terms, aliases: [...aliases], updated: Date.now() });
+    return saveTagSession(sess);
+  }
   const text = hide.original.getValue();
   return saveSession({ text, picks: [...picks], terms, aliases: [...aliases], ner: nerDone === text ? { mode: `${nerMode.value}@${__MODELS__}`, spans: nerList } : undefined });
-}, 500);
+}
+const saveSoon = debounce(saveNow, 500);
 
 /** «Зида» — опечатка «Зины», «Сбер» — это «Сбербанк»: строки `others` присоединяются к `g` — одна строка, одна замена на все написания и падежи */
 function joinRows(g: Group, others: Group[]) {
@@ -307,10 +351,11 @@ function setPick(g: Group, to: string, on: boolean) {
   refresh();
 }
 function toggle(g: Group) {
+  if (mode === 'tags') { picks.set(g.key, { to: '', from: '', on: !g.on }); return refresh(); } // тег придумывать не нужно: только заменять или нет
   if (g.on) return setPick(g, g.to, false);
   const to = g.to || suggestFor(g);
   setPick(g, to, true);
-  if (!to) focusRepl(g.key); // компанию и место человек придумывает сам
+  if (!to) focusRepl(g.key); // место человек придумывает сам
 }
 const focusRepl = (key: string) => {
   const i = document.querySelector<HTMLInputElement>(`#found [data-key="${CSS.escape(key)}"][data-role="repl"]`);
@@ -405,11 +450,14 @@ function drawFound() {
     repl.dataset.key = key; repl.dataset.role = 'repl';
     repl.placeholder = hint || 'на что заменить';
     repl.setAttribute('aria-label', `На что заменить «${g.base}»`);
-    repl.oninput = () => { picks.set(key, { to: repl.value, from: fromOf(g), on: !!repl.value.trim() }); refreshSoon(); };
-    repl.onkeydown = (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); go.focus(); }
-      else if (e.key === 'Tab' && !e.shiftKey && !repl.value && hint) { e.preventDefault(); setPick(g, hint, true); focusRepl(key); }
-    };
+    if (mode === 'tags') { repl.readOnly = true; repl.placeholder = 'не заменяется'; } // тег выдаёт приложение
+    else {
+      repl.oninput = () => { picks.set(key, { to: repl.value, from: fromOf(g), on: !!repl.value.trim() }); refreshSoon(); };
+      repl.onkeydown = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); go.focus(); }
+        else if (e.key === 'Tab' && !e.shiftKey && !repl.value && hint) { e.preventDefault(); setPick(g, hint, true); focusRepl(key); }
+      };
+    }
 
     const cell = (cls: string, ...c: (Node | string)[]) => { const td = document.createElement('td'); td.className = cls; td.append(...c); return td; };
     const badge = Object.assign(document.createElement('span'), { className: 'badge', textContent: TYPE_LABEL[sp.type] });
@@ -485,6 +533,10 @@ const rangeOf = (m: monaco.editor.ITextModel, start: number, end: number) => {
 
 // Заменить все показанные строки (учитывает поиск и фильтр) или снять замену со всех
 function setVisible(on: boolean) {
+  if (mode === 'tags') {
+    for (const g of visible().filter((x) => !x.plain)) picks.set(g.key, { to: '', from: '', on });
+    return refresh();
+  }
   let skipped = 0;
   for (const g of visible().filter((x) => !x.plain)) {
     if (!on) { if (g.on) picks.set(g.key, { to: g.to, from: fromOf(g), on: false }); continue; }
@@ -495,7 +547,7 @@ function setVisible(on: boolean) {
     g.to = to; g.on = true; // следующая заготовка того же типа получит следующий номер
   }
   refresh();
-  if (skipped) toast(`Без замены пропущено: ${skipped} (компании и места) — впишите, на что их заменить`);
+  if (skipped) toast(`Без замены пропущено: ${skipped} (места) — впишите, на что их заменить`);
 }
 $('#foundAll').onchange = () => setVisible(!visible().filter((g) => !g.plain).every((g) => g.on));
 $<HTMLInputElement>('#foundSearch').oninput = (e) => { query = (e.target as HTMLInputElement).value.trim().toLowerCase(); drawFound(); };
@@ -630,7 +682,8 @@ hide.original.onDidChangeContent(() => ($('#emptyHide').hidden = !!hide.original
 function toDict(term: string, type: Type, replacement: string) {
   const key = entityKey(type, term);
   const d = dict.find((x) => entityKey(x.type, x.term) === key);
-  if (d) d.replacement = replacement; else dict.push({ term, type, replacement });
+  if (d) d.replacement = replacement || (mode === 'tags' ? d.replacement : ''); // в режиме тегов замены нет: словарь только «находит»
+  else dict.push({ term, type, replacement });
   persistDict();
   picks.delete(key); // теперь это решение словаря, а не только этого текста
   renderDict(); refresh();
@@ -706,10 +759,13 @@ const shorten = (v: string, n: number) => (v.length > n ? `${v.slice(0, n - 1)}�
 /** поле «на что заменить» + кнопка; Enter = кнопка */
 function replaceRow(value: string, placeholder: string, done: (to: string) => void) {
   const row = el('form', 'tip-replace');
-  const input = Object.assign(document.createElement('input'), { type: 'text', value, placeholder, autocomplete: 'off' });
+  const tags = mode === 'tags'; // тег выдаёт приложение: поля нет, только кнопка
+  const input = Object.assign(document.createElement('input'), { type: 'text', value, placeholder, autocomplete: 'off', hidden: tags });
   input.setAttribute('aria-label', 'На что заменить');
-  row.append(input, el('button', 'tip-act main', 'Заменить'));
-  row.onsubmit = (e) => { e.preventDefault(); if (input.value.trim()) done(input.value.trim()); else input.focus(); };
+  const go = el('button', 'tip-act main', tags ? 'Заменить тегом' : 'Заменить');
+  if (tags) input.focus = () => go.focus();
+  row.append(input, go);
+  row.onsubmit = (e) => { e.preventDefault(); if (tags) done(''); else if (input.value.trim()) done(input.value.trim()); else input.focus(); };
   return { row, input };
 }
 const dictBox = () => {
@@ -854,6 +910,7 @@ async function openFiles(files: File[]) {
   if (bad.length) toast(`Не текстовый файл: ${bad.join(', ')}`);
   const ok = texts.filter((t) => t !== null);
   if (!ok.length) return;
+  showTab('prompt');
   forget();
   replaceText(hide.original, ok.join('\n\n'));
 }
@@ -905,18 +962,26 @@ function toast(msg: string) {
   toastTimer = window.setTimeout(() => (t.textContent = ''), 4000);
 }
 
-const COPY_LABEL = 'Скопировать результат';
+const copyLabel = () => (mode === 'manual' ? 'Скопировать результат' : tab === 'reply' ? 'Скопировать ответ' : 'Скопировать промпт');
 let copyTimer: number | undefined;
-$('#copy').onclick = async () => {
-  if (!hide.original.getValue().trim()) return toast('Нечего копировать');
-  const risky = groups.filter((g) => !replaced(g) && DANGEROUS.has(g.sp.type)).length;
-  if (risky && !confirm(`В тексте остались незаменённые секреты (ключи, пароли): ${risky}. Всё равно скопировать?`)) return;
-  if (!(await toClipboard(hide.modified.getValue()))) return;
+function copied(msg: string) {
   const b = $('#copy');
   b.textContent = 'Скопировано ✓'; b.classList.add('done');
   clearTimeout(copyTimer);
-  copyTimer = window.setTimeout(() => { b.textContent = COPY_LABEL; b.classList.remove('done'); }, 1600);
-  toast(outRanges.length ? `Заменено мест: ${outRanges.length}` : 'Ничего не заменено — скопирован исходный текст');
+  copyTimer = window.setTimeout(() => { b.textContent = copyLabel(); b.classList.remove('done'); }, 1600);
+  toast(msg);
+}
+$('#copy').onclick = async () => {
+  if (mode === 'tags' && tab === 'reply') return copyReply();
+  if (!hide.original.getValue().trim()) return toast('Нечего копировать');
+  const risky = groups.filter((g) => !replaced(g) && DANGEROUS.has(g.sp.type)).length;
+  if (risky && !confirm(`В тексте остались незаменённые секреты (ключи, пароли): ${risky}. Всё равно скопировать?`)) return;
+  const result = hide.modified.getValue();
+  // тегов в тексте нет — и объяснять нейросети нечего
+  const withTip = mode === 'tags' && outRanges.length > 0 && $<HTMLInputElement>('#instr').checked;
+  if (!(await toClipboard(withTip ? `${INSTRUCTION}\n\n${result}` : result))) return;
+  if (mode === 'tags') commit('prompt', hide.original.getValue(), result);
+  copied(outRanges.length ? `Заменено мест: ${outRanges.length}` : 'Ничего не заменено — скопирован исходный текст');
 };
 
 const EXAMPLE =
@@ -974,11 +1039,166 @@ $<HTMLFormElement>('#dictForm').onsubmit = (e) => {
   dictTerm.focus();
 };
 
-setModel('loading', 'Загрузка модели…', 0);
-ner.load().catch(() => {}); // модель скачивается всегда; ошибка показывается в полосе состояния
-renderDict();
-// текст и решения по нему с прошлого раза (если пользователь не успел начать новый)
-loadSession().then((saved) => {
+// ───────────── режим «Теги»: сессии, вкладки, ответ ─────────────
+const INSTRUCTION = 'Часть слов в тексте скрыта тегами вида [PERSON_1], [ORG_2], [EMAIL_1]. Не расшифровывай их и пиши в ответе дословно. Если по-русски слово нужно в другом падеже, допиши окончание после «|», как в [PERSON_1|ю].';
+const instr = $<HTMLInputElement>('#instr');
+instr.checked = st.getItem(INSTR) !== '0';
+instr.onchange = () => st.setItem(INSTR, instr.checked ? '1' : '0');
+
+const newSession = (): TagSession => {
+  const t = Date.now();
+  return { id: t.toString(36), title: '', created: t, updated: t, draft: '', reply: '', picks: [], terms: [], aliases: [], tags: newTable(), messages: [] };
+};
+const sessTitle = (s: TagSession) => s.title || 'Новая сессия';
+
+function drawSessions() {
+  const sel = $<HTMLSelectElement>('#sessSel');
+  sel.replaceChildren(...sessions.map((s) => Object.assign(new Option(sessTitle(s), s.id), { title: sessTitle(s) })));
+  sel.value = sess?.id ?? '';
+  $<HTMLButtonElement>('#sessDel').disabled = !sess;
+}
+
+/** с сессией `s` работаем: её текст, решения и ответ — в редакторах */
+function openSession(s: TagSession) {
+  sess = s;
+  st.setItem(SESS, s.id);
+  picks = new Map(s.picks); terms = s.terms; aliases = new Map(s.aliases); selected = new Set(); activeKey = '';
+  setValue(hide.original, s.draft);
+  setValue(rep.original, s.reply);
+  drawSessions();
+  refreshReply();
+  if (tab === 'history') drawHistory();
+}
+async function switchSession(id: string) {
+  const s = sessions.find((x) => x.id === id);
+  if (!s || s === sess) return;
+  await saveNow();
+  openSession(s);
+  refresh();
+}
+$('#sessSel').onchange = (e) => switchSession((e.target as HTMLSelectElement).value);
+$('#sessNew').onclick = async () => {
+  if (sess && !sess.messages.length && !hide.original.getValue().trim()) return hide.editor.focus(); // эта и так чистая
+  await saveNow();
+  const s = newSession();
+  sessions.unshift(s);
+  openSession(s);
+  showTab('prompt');
+  refresh();
+  hide.editor.focus();
+};
+$('#sessRen').onclick = () => {
+  const title = sess && prompt('Название сессии', sess.title);
+  if (!sess || title === null) return;
+  sess.title = title.trim();
+  drawSessions(); saveNow();
+};
+$('#sessDel').onclick = async () => {
+  if (!sess || !confirm(`Удалить сессию «${sessTitle(sess)}» вместе с историей? Вернуть её будет нельзя.`)) return;
+  const gone = sess;
+  sess = null; // пока удаляем, сохранять нечего
+  sessions = sessions.filter((x) => x !== gone);
+  await deleteTagSession(gone.id);
+  const next = sessions[0] ?? newSession();
+  if (!sessions.length) sessions = [next];
+  openSession(next);
+  refresh();
+};
+
+/** сообщение ушло (или пришло): запомнить в сессии; таблица тегов отданного промпта становится окончательной */
+function commit(kind: 'prompt' | 'reply', original: string, result: string) {
+  if (!sess) return;
+  if (kind === 'prompt') sess.tags = tagWork;
+  const last = sess.messages.at(-1);
+  if (last?.kind === kind && last.original === original) Object.assign(last, { result, at: Date.now() });
+  else sess.messages.push({ kind, original, result, at: Date.now() });
+  // название — из текста с тегами: настоящие имена на экране в шапке ни к чему
+  if (!sess.title && kind === 'prompt') sess.title = shorten(result.trim().replace(/\s+/g, ' '), 40);
+  drawSessions();
+  saveNow();
+}
+
+// ───── ответ нейросети: теги обратно в слова ─────
+let replyRes: Untagged = untag('', newTable());
+function refreshReply() {
+  const r = (replyRes = untag(rep.original.getValue(), sess?.tags ?? newTable()));
+  setValue(rep.modified, r.text);
+  const bad = new Set(r.unsure.map(String));
+  const mark = (at: [number, number], cls: string, m: monaco.editor.ITextModel) => ({ range: rangeOf(m, at[0], at[1]), options: { inlineClassName: cls } });
+  repMarks.set(r.tags.map((x) => mark(x, 'ph', rep.original)));
+  repBack.set([...r.ranges.filter((x) => !bad.has(String(x))).map((x) => mark(x, 'ph', rep.modified)), ...r.unsure.map((x) => mark(x, 'doubt', rep.modified))]);
+  $('#replyNote').textContent = r.unknown ? `Тегов не из этой сессии: ${r.unknown}. Проверьте, что выбрана нужная`
+    : r.unsure.length ? `Проверьте места, подсвеченные жёлтым: ${r.unsure.length}`
+    : r.ranges.length ? `Вернулось слов: ${r.ranges.length}` : '';
+}
+rep.original.onDidChangeContent(debounce(() => { refreshReply(); if (restored) saveSoon(); }, 120));
+rep.original.onDidChangeContent(() => ($('#emptyReply').hidden = !!rep.original.getValue()));
+async function pasteReply() {
+  try { replaceText(rep.original, await navigator.clipboard.readText()); }
+  catch { toast('Браузер не дал доступ к буферу — вставьте вручную (Ctrl/⌘+V) в левое окно'); }
+}
+$('#replyPaste').onclick = $('#emptyReplyPaste').onclick = pasteReply;
+$('#replyClear').onclick = () => { replaceText(rep.original, ''); toast('Очищено. Вернуть текст: Ctrl/⌘+Z'); rep.editor.focus(); };
+async function copyReply() {
+  if (!rep.original.getValue().trim()) return toast('Нечего копировать');
+  refreshReply();
+  const r = replyRes;
+  if (!(await toClipboard(r.text))) return;
+  commit('reply', rep.original.getValue(), r.text);
+  copied(r.unsure.length ? `Скопировано. Проверьте места, подсвеченные жёлтым: ${r.unsure.length}` : `Скопировано · вернулось слов: ${r.ranges.length}`);
+}
+
+// ───── история сессии ─────
+function drawHistory() {
+  const when = (t: number) => new Date(t).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  $('#history').replaceChildren(...[...(sess?.messages ?? [])].reverse().map((m) => {
+    const b = el('button', '');
+    // в строке — текст с тегами, а не настоящие имена
+    b.append(el('span', 'kind', m.kind === 'prompt' ? 'Промпт' : 'Ответ'), el('span', 'when', when(m.at)), el('span', 'first', (m.kind === 'prompt' ? m.result : m.original).trim().split('\n')[0]));
+    b.onclick = () => {
+      if (m.kind === 'prompt') { showTab('prompt'); forget(); replaceText(hide.original, m.original); }
+      else { showTab('reply'); replaceText(rep.original, m.original); }
+    };
+    const li = document.createElement('li');
+    li.append(b);
+    return li;
+  }));
+}
+
+// ───── вкладки и переключатель режима ─────
+function showTab(t: Tab) {
+  tab = t;
+  for (const b of document.querySelectorAll<HTMLElement>('#tabs [data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === t));
+  $('#promptPane').hidden = t !== 'prompt';
+  $('#replyPane').hidden = t !== 'reply';
+  $('#historyPane').hidden = t !== 'history';
+  $('#instrBox').hidden = !(mode === 'tags' && t === 'prompt');
+  $('#copy').hidden = t === 'history';
+  $('#copy').textContent = copyLabel();
+  if (t === 'reply') refreshReply();
+  if (t === 'history') drawHistory();
+  requestAnimationFrame(() => (t === 'reply' ? rep : hide).diff.layout());
+}
+for (const b of document.querySelectorAll<HTMLButtonElement>('#tabs [data-tab]')) b.onclick = () => showTab(b.dataset.tab as Tab);
+
+function showMode() {
+  const tags = mode === 'tags';
+  $('#modeManual').setAttribute('aria-pressed', String(!tags));
+  $('#modeTags').setAttribute('aria-pressed', String(tags));
+  $('#sessBar').hidden = !tags;
+  $('#tabs').hidden = !tags;
+  showTab(tags ? tab : 'prompt');
+}
+
+/** текст и решения с прошлого раза: в режиме тегов — сессия, иначе единственный текст (если пользователь не успел начать новый) */
+async function enter() {
+  if (mode === 'tags') {
+    sessions = await listSessions();
+    const s = sessions.find((x) => x.id === st.getItem(SESS)) ?? sessions[0] ?? newSession();
+    if (!sessions.includes(s)) sessions = [s];
+    return openSession(s);
+  }
+  const saved = await loadSession();
   if (saved?.text && !hide.original.getValue()) {
     picks = new Map(saved.picks);
     aliases = new Map(saved.aliases ?? []);
@@ -986,4 +1206,27 @@ loadSession().then((saved) => {
     if (saved.ner?.mode === `${nerMode.value}@${__MODELS__}`) { nerFor = nerDone = saved.text; nerList = saved.ner.spans; }
     setValue(hide.original, saved.text);
   }
-}).finally(() => { restored = true; refresh(); });
+}
+async function setMode(next: Mode) {
+  if (next === mode) return;
+  await saveNow(); // у каждого режима свой текст и свои решения
+  restored = false;
+  mode = next;
+  st.setItem(MODE, next);
+  picks = new Map(); terms = []; aliases = new Map(); selected = new Set(); activeKey = ''; sess = null;
+  setValue(hide.original, ''); setValue(rep.original, '');
+  await enter();
+  restored = true;
+  showMode();
+  refresh();
+}
+$('#modeManual').onclick = () => setMode('manual');
+$('#modeTags').onclick = () => setMode('tags');
+
+if (nerMode.value === 'none') noModel();
+else {
+  setModel('loading', 'Загрузка модели…', 0);
+  ner.load().catch(() => {}); // ошибка показывается в полосе состояния
+}
+renderDict();
+enter().finally(() => { restored = true; showMode(); refresh(); });

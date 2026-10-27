@@ -39,15 +39,14 @@ describe('texts with people and companies (no model)', () => {
 
 // The fallback when the model misses someone: the user adds the name to the dictionary.
 // Every occurrence must go, and nothing from `keep` may go with it.
-describe('texts with people and companies, names in the dictionary', () => {
+describe('texts with people, names in the dictionary', () => {
   const dictFor = (c: TextCase): Term[] => [
     ...(c.per ?? []).map((term) => ({ term, type: 'PERSON' as const })),
-    ...(c.org ?? []).map((term) => ({ term, type: 'ORG' as const })),
   ];
-  for (const c of positives.filter((c) => c.per?.length || c.org?.length)) {
+  for (const c of positives.filter((c) => c.per?.length)) {
     it(`${c.kind}: ${short(c.text)}`, () => {
       const m = replaceAll(c.text, dictFor(c));
-      for (const h of [...(c.per ?? []), ...(c.org ?? []), ...(c.hide ?? [])]) expectHidden(c.text, m, h);
+      for (const h of [...(c.per ?? []), ...(c.hide ?? [])]) expectHidden(c.text, m, h);
       for (const k of c.keep ?? []) expectKept(c.text, m, k);
     });
   }

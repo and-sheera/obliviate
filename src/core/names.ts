@@ -27,7 +27,13 @@ John Michael David Mark James Robert Peter Paul Tom Daniel Chris Alex Mike Sarah
 
 let keys: Set<string> | undefined;
 const nameKeys = () => (keys ??= new Set(LIST.trim().split(/\s+/).map((n) => entityKey('PERSON', n))));
-const isName = (w: string) => nameKeys().has(entityKey('PERSON', w));
+export const isName = (w: string) => nameKeys().has(entityKey('PERSON', w));
+const exact = new Set(LIST.trim().split(/\s+/).map((n) => n.toLowerCase()));
+/** the very first name of the list, in this very form or the one of its other cases that ends the same way: "Мария", "Марии", "Марию" — but not "Германия" next to "Герман" */
+export const isNameExact = (w: string) => {
+  const l = w.toLowerCase().replace(/ё/g, 'е');
+  return exact.has(l) || exact.has(l.replace(/(?:ии|ию|ией)$/, 'ия').replace(/ё/g, 'е')) || [...exact].some((n) => n.replace(/ё/g, 'е') === l);
+};
 const INITIALS = /^(?:\p{Lu}\.)+$/u;
 
 /** "Даня", "Лёхе", "Иван И.", "И. И.": nobody can be told by it — no surname, no patronymic, nothing unknown */

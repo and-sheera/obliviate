@@ -1,4 +1,5 @@
 import { suggest } from './replace';
+import type { TagTable } from './tags';
 import { TYPES, type DictEntry, type Span, type Term, type Type } from './types';
 
 export interface KV {
@@ -68,3 +69,26 @@ export const loadSession = (): Promise<Session | null> =>
   idb('readonly', (s) => s.get('session')).then((v) => (v as Session) ?? null, () => null);
 export const saveSession = (session: Session): Promise<unknown> => idb('readwrite', (s) => s.put(session, 'session')).catch(() => null);
 
+
+/** Tags mode: a conversation with a neural network. The table of tags lives as long as the session, so every next prompt and reply goes through it. */
+export interface TagSession {
+  id: string;
+  title: string;
+  created: number;
+  updated: number;
+  /** the prompt and the reply being edited now */
+  draft: string;
+  reply: string;
+  picks: Array<[string, Pick]>;
+  terms: Term[];
+  aliases: Array<[string, string]>;
+  tags: TagTable;
+  messages: Array<{ kind: 'prompt' | 'reply'; original: string; result: string; at: number }>;
+}
+
+// "tags:<id>"; the range is "tags:" … "tags;" (the next character), so it does not touch the manual session under "session"
+const SESSIONS = () => IDBKeyRange.bound('tags:', 'tags;');
+export const listSessions = (): Promise<TagSession[]> =>
+  idb('readonly', (s) => s.getAll(SESSIONS())).then((v) => (v as TagSession[]).sort((a, b) => b.updated - a.updated), () => []);
+export const saveTagSession = (s: TagSession): Promise<unknown> => idb('readwrite', (st) => st.put(s, `tags:${s.id}`)).catch(() => null);
+export const deleteTagSession = (id: string): Promise<unknown> => idb('readwrite', (st) => st.delete(`tags:${id}`)).catch(() => null);

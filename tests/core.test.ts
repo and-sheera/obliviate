@@ -110,8 +110,9 @@ describe('detect', () => {
   it("docker's -u uid:gid is not a login", () => {
     expect(types('docker run -u 1000:1000 -p 8080:80 nginx')).toEqual([]);
   });
-  it('luhn-free: 16 digits are not treated as anything in v1', () => {
-    expect(types('4111 1111 1111 1111')).toEqual([]);
+  it('a card number is found by Luhn, 16 digits that fail it are not', () => {
+    expect(types('4111 1111 1111 1111')).toEqual(['CARD:4111 1111 1111 1111']);
+    expect(types('4111 1111 1111 1112')).toEqual([]);
   });
   it('a key=value inside the value of an ordinary word is still found', () => {
     expect(types('не свети их: DB_PASSWORD=Qwerty!2024secure')).toEqual(['PASSWORD:Qwerty!2024secure']);
@@ -139,9 +140,9 @@ describe('collect', () => {
     expect(got.filter((t) => t === 'admin')).toHaveLength(1);
   });
   it('one word, one type: the model is outvoted by the majority and by the rules', () => {
-    const text = 'ребята из Озона. С Озоном завтра. Озон молчит. Работаю в ООО «Вектор», Вектор платит.';
-    const spans = collect(text, { extra: [ner(text, 'Озона', 'LOC'), ner(text, 'Озоном', 'PERSON'), ner(text, 'Озон', 'LOC', 30), ner(text, 'Вектор', 'LOC', 70)] });
-    expect(spans.map((s) => `${s.type}:${s.text}`)).toEqual(['LOC:Озона', 'LOC:Озоном', 'LOC:Озон', 'ORG:Вектор', 'ORG:Вектор']);
+    const text = 'ребята из Озона. С Озоном завтра. Озон молчит.';
+    const spans = collect(text, { extra: [ner(text, 'Озона', 'LOC'), ner(text, 'Озоном', 'PERSON'), ner(text, 'Озон', 'LOC', 30)] });
+    expect(spans.map((s) => `${s.type}:${s.text}`)).toEqual(['LOC:Озона', 'LOC:Озоном', 'LOC:Озон']);
   });
 });
 
@@ -198,10 +199,10 @@ describe('ner aggregate (synthetic tokens)', () => {
     expect([s.type, s.start, s.end, s.source]).toEqual(['PERSON', 8, 19, 'ner']);
   });
   it('glues wordpieces back into whole words', () => {
-    expect(got('в Ромашке', 'в/O ро/B-ORG ##маш/I-ORG ##ке/I-ORG')).toEqual(['ORG:Ромашке']);
+    expect(got('в Ромашке', 'в/O ро/B-LOC ##маш/I-LOC ##ке/I-LOC')).toEqual(['LOC:Ромашке']);
   });
   it('a new B- starts a new entity', () => {
-    expect(got('Ромашка Лютик', 'ромашка/B-ORG лютик/B-ORG')).toEqual(['ORG:Ромашка', 'ORG:Лютик']);
+    expect(got('Ромашка Лютик', 'ромашка/B-LOC лютик/B-LOC')).toEqual(['LOC:Ромашка', 'LOC:Лютик']);
   });
   it('is blind to case, ё/е and й/и differences between text and tokenizer', () => {
     expect(got('Фёдор Гайдай', 'федор/B-PER гаидаи/I-PER')).toEqual(['PERSON:Фёдор Гайдай']);
@@ -210,14 +211,14 @@ describe('ner aggregate (synthetic tokens)', () => {
     expect(got('🚀 Иван', '[CLS]/O [UNK]/O иван/B-PER [SEP]/O')).toEqual(['PERSON:Иван']);
   });
   it('drops latin spans in a russian line, keeps them in an english one', () => {
-    expect(got('Java и TCP', 'java/B-ORG и/O tcp/B-ORG')).toEqual([]);
-    expect(got('Пишу на Java для Acme Corp', 'пишу/O на/O java/B-ORG для/O acme/B-ORG corp/I-ORG')).toEqual([]);
-    expect(got('Call with Sarah Connor from Acme Corp', 'call/O with/O sarah/B-PER connor/I-PER from/O acme/B-ORG corp/I-ORG')).toEqual(['PERSON:Sarah Connor', 'ORG:Acme']);
-    expect(got('SELECT id FROM orders WHERE status', 'select/B-ORG id/I-ORG from/O orders/O where/B-ORG status/I-ORG')).toEqual([]);
-    expect(got('WARN TomcatWebServer: Tomcat started on port', 'warn/B-ORG tomcat/B-ORG ##web/I-ORG ##server/I-ORG :/O tomcat/B-ORG started/I-ORG on/I-ORG port/I-ORG')).toEqual([]);
+    expect(got('Java и TCP', 'java/B-LOC и/O tcp/B-LOC')).toEqual([]);
+    expect(got('Пишу на Java для Acme Corp', 'пишу/O на/O java/B-LOC для/O acme/B-LOC corp/I-LOC')).toEqual([]);
+    expect(got('Call with Sarah Connor from Acme Corp', 'call/O with/O sarah/B-PER connor/I-PER from/O acme/B-LOC corp/I-LOC')).toEqual(['PERSON:Sarah Connor', 'LOC:Acme']);
+    expect(got('SELECT id FROM orders WHERE status', 'select/B-LOC id/I-LOC from/O orders/O where/B-LOC status/I-LOC')).toEqual([]);
+    expect(got('WARN TomcatWebServer: Tomcat started on port', 'warn/B-LOC tomcat/B-LOC ##web/I-LOC ##server/I-LOC :/O tomcat/B-LOC started/I-LOC on/I-LOC port/I-LOC')).toEqual([]);
   });
   it('drops bare legal forms and trims quotes', () => {
-    expect(got('ПАО «Ромашка»', 'пао/B-ORG «/I-ORG рома/B-ORG ##шка/I-ORG »/O')).toEqual(['ORG:Ромашка']);
+    expect(got('ПАО «Ромашка»', 'пао/B-LOC «/I-LOC рома/B-LOC ##шка/I-LOC »/O')).toEqual(['LOC:Ромашка']);
   });
   it('trims lowercase words and greetings around a person', () => {
     expect(got('Уважаемый Алексей Викторович привет', 'уважаемыи/B-PER алексеи/I-PER викторович/I-PER привет/I-PER')).toEqual([
@@ -275,32 +276,31 @@ describe('ner aggregate (synthetic tokens)', () => {
   });
   it('glues a surname to the first name, and parts around a hyphen', () => {
     expect(got('Кузнецова Валерия Игоревна', 'кузнецова/B-PER валерия/B-PER игоревна/I-PER')).toEqual(['PERSON:Кузнецова Валерия Игоревна']);
-    expect(got('из Волга-Ресурс', 'из/O волга/B-ORG -/O ресурс/B-ORG')).toEqual(['ORG:Волга-Ресурс']);
+    expect(got('из Волга-Ресурс', 'из/O волга/B-LOC -/O ресурс/B-LOC')).toEqual(['LOC:Волга-Ресурс']);
     expect(got('в Комсомольске-на-Амуре', 'в/O комсомольске/B-LOC -/B-LOC на/B-LOC -/B-LOC амуре/B-LOC')).toEqual(['LOC:Комсомольске-на-Амуре']);
     expect(got('Ким, Ли', 'ким/B-PER ,/O ли/B-PER')).toEqual(['PERSON:Ким', 'PERSON:Ли']);
     expect(got('Олеговна (ИП', 'олеговна/B-PER (/I-PER ип/B-PER')).toEqual(['PERSON:Олеговна']);
-    expect(got('группы ИВТ-21 Горбунов', 'группы/O ивт/B-ORG -/B-ORG 21/B-ORG горбунов/B-PER')).toEqual(['PERSON:Горбунов']);
-    expect(got('юриста Волга-Ресурса', 'юриста/O волга/B-ORG/0.5 -/B-ORG/0.88 ресурс/B-ORG/0.97 ##а/I-ORG/0.9')).toEqual(['ORG:Волга-Ресурса']); // one weak part
+    expect(got('группы ИВТ-21 Горбунов', 'группы/O ивт/B-LOC -/B-LOC 21/B-LOC горбунов/B-PER')).toEqual(['PERSON:Горбунов']);
+    expect(got('юриста Волга-Ресурса', 'юриста/O волга/B-LOC/0.5 -/B-LOC/0.88 ресурс/B-LOC/0.97 ##а/I-LOC/0.9')).toEqual(['LOC:Волга-Ресурса']); // one weak part
   });
   it('never crosses a sentence end, a signature line or a slash; initials stay', () => {
     expect(got('Марина. Марин', 'марина/B-PER ./I-PER марин/I-PER')).toEqual(['PERSON:Марина', 'PERSON:Марин']);
     expect(got('Ю.С. Воронцов', 'ю/B-PER ./I-PER с/I-PER ./I-PER воронцов/I-PER')).toEqual(['PERSON:Ю.С. Воронцов']);
-    expect(got('«Вектор» ____ Ю', '«/B-ORG вектор/I-ORG »/I-ORG _/I-ORG _/I-ORG _/I-ORG _/I-ORG ю/I-ORG')).toEqual(['ORG:Вектор']);
+    expect(got('«Вектор» ____ Ю', '«/B-LOC вектор/I-LOC »/I-LOC _/I-LOC _/I-LOC _/I-LOC _/I-LOC ю/I-LOC')).toEqual(['LOC:Вектор']);
   });
   it('trims prepositions and conjunctions at the edges, in any case', () => {
     expect(got('С Озоном', 'с/B-PER озоном/I-PER')).toEqual(['PERSON:Озоном']);
     expect(got('Там Кирилл всё сделал', 'там/B-PER кирилл/I-PER все/O сделал/O')).toEqual(['PERSON:Кирилл']);
-    expect(got('Северсталь и Ростех', 'северсталь/B-ORG и/I-ORG ростех/B-ORG')).toEqual(['ORG:Северсталь', 'ORG:Ростех']);
+    expect(got('Северсталь и Ростех', 'северсталь/B-LOC и/I-LOC ростех/B-LOC')).toEqual(['LOC:Северсталь', 'LOC:Ростех']);
     expect(got('в Комсомольске на', 'в/O комсомольске/B-LOC на/B-LOC')).toEqual(['LOC:Комсомольске']);
   });
-  it('a heading in capitals is not a company, an acronym is', () => {
-    expect(got('ХАРАКТЕРИСТИКА', 'характеристика/B-ORG')).toEqual([]);
-    expect(got('ПРОТОКОЛ ВСТРЕЧИ', 'протокол/O встречи/B-ORG')).toEqual([]);
-    expect(got('Звонил в МТС', 'звонил/O в/O мтс/B-ORG')).toEqual(['ORG:МТС']);
-    expect(got('ЧЕРЕПОВЕЦ, 12 марта', 'череповец/B-LOC ,/O 12/O марта/O')).toEqual(['LOC:ЧЕРЕПОВЕЦ']);
+  it('does not look for organisations: what the model tags as one is a plain word', () => {
+    expect(got('Звонил в МТС', 'звонил/O в/O мтс/B-ORG')).toEqual([]);
+    expect(got('ПАО «Ромашка»', 'пао/B-ORG «/I-ORG рома/B-ORG ##шка/I-ORG »/O')).toEqual([]);
+    expect(got('Работаю в Яндексе, жду Ивана', 'работаю/O в/O яндексе/B-ORG ,/O жду/O ивана/B-PER')).toEqual(['PERSON:Ивана']);
   });
-  it('legal forms spelled out and address abbreviations are not entities', () => {
-    expect(got('Общество с ограниченной ответственностью «Вектор»', 'общество/B-ORG с/I-ORG ограниченнои/I-ORG ответственностью/I-ORG «/O вектор/B-ORG »/O')).toEqual(['ORG:Вектор']);
+  it('a heading in capitals is a place only when it is one; address abbreviations are not entities', () => {
+    expect(got('ЧЕРЕПОВЕЦ, 12 марта', 'череповец/B-LOC ,/O 12/O марта/O')).toEqual(['LOC:ЧЕРЕПОВЕЦ']);
     expect(got('ул. Малышева, наб. реки Мойки', 'ул/B-LOC ./O малышева/B-LOC ,/O наб/B-LOC ./O реки/O мойки/B-LOC')).toEqual(['LOC:Малышева', 'LOC:Мойки']);
   });
   it('chunks long text on newlines without losing characters', () => {
@@ -309,5 +309,24 @@ describe('ner aggregate (synthetic tokens)', () => {
     expect(parts.length).toBeGreaterThan(1);
     expect(parts.map((p) => p.text).join('')).toBe(text);
     for (const p of parts) expect(text.startsWith(p.text, p.offset)).toBe(true);
+  });
+});
+
+describe('numbers with a check digit', () => {
+  const found = (text: string) => detect(text).filter((s) => s.type === 'CARD' || s.type === 'DOC').map((s) => s.text);
+  it('finds cards, ИНН, СНИЛС, ОГРН by checksum and passports by context', () => {
+    expect(found('оплата картой 5536913745628392')).toEqual(['5536913745628392']);
+    expect(found('карта 4276 1234 5678 9014')).toEqual(['4276 1234 5678 9014']);
+    expect(found('списалось с 5469234567890122')).toEqual(['5469234567890122']);
+    expect(found('мой ИНН 771299779788')).toEqual(['771299779788']);
+    expect(found('СНИЛС: 222-643-344 36')).toEqual(['222-643-344 36']);
+    expect(found('ОГРН 5027739001230')).toEqual(['5027739001230']);
+    expect(found('паспорт 4516728934')).toEqual(['4516728934']);
+    expect(found('паспорт серия 77 14, номер 345678')).toEqual(['77 14', '345678']);
+  });
+  it('leaves ordinary numbers alone', () => {
+    expect(found('заказ 5536913745628391 оформлен')).toEqual([]); // fails Luhn
+    expect(found('тел. 8 916 123-45-67, сумма 1 234 567 890 руб.')).toEqual([]);
+    expect(found('версия 2024-10-06, артикул 12345678901')).toEqual([]);
   });
 });

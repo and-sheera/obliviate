@@ -4,13 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Obliviate</title>
-    <meta name="description" content="Замена имён, компаний и секретов в тексте перед отправкой в нейросеть. Всё работает в браузере." />
+    <meta name="description" content="Замена имён и секретов в тексте перед отправкой в нейросеть. Всё работает в браузере." />
     <link rel="icon" type="image/png" sizes="81x81" href="/favicon.png" />
   </head>
   <body>
     <div class="app">
       <header class="top">
         <h1 class="brand"><img class="logo" src="/logo.png" alt="Obliviate" /></h1>
+
+        <div class="seg" role="group" aria-label="Режим">
+          <button id="modeManual" aria-pressed="true" title="Вы сами отмечаете, что заменить и на что">Вручную</button>
+          <button id="modeTags" aria-pressed="false" title="Всё найденное заменяется тегами [PERSON_1], ответ нейросети возвращается обратно с нужными падежами">Теги</button>
+        </div>
+        <div id="sessBar" class="sess" hidden>
+          <select id="sessSel" aria-label="Сессия"></select>
+          <button id="sessNew" class="small ghost" title="Новая сессия: новые теги, чистая история">Новая</button>
+          <button id="sessRen" class="small ghost" title="Переименовать сессию">Имя</button>
+          <button id="sessDel" class="small ghost" title="Удалить сессию вместе с историей">Удалить</button>
+        </div>
 
         <span class="spacer"></span>
 
@@ -30,8 +41,9 @@
             </div>
             <div id="model" class="model" role="status">
               <div class="model-line">
-                <span id="modelDot" class="dot"></span><span id="modelText">Модель не запущена</span><button id="modelRetry" class="small" hidden>Повторить</button>
-                <select id="nerMode" aria-label="Как искать имена и компании" title="Точно: три модели голосуют — реже пропускают людей и реже принимают обычные слова за имена; 154 МБ, анализ втрое дольше.&#10;Быстро: одна модель, 31 МБ.&#10;Модели скачиваются один раз и потом берутся из кеша браузера.">
+                <span id="modelDot" class="dot"></span><span id="modelText">Без модели</span><button id="modelRetry" class="small" hidden>Повторить</button>
+                <select id="nerMode" aria-label="Как искать имена" title="Без модели: словарь и правила, ничего не скачивается, результат сразу.&#10;Быстро: одна модель, 31 МБ.&#10;Точно: три модели голосуют — реже пропускают людей и реже принимают обычные слова за имена; 154 МБ, анализ втрое дольше.&#10;Модели скачиваются один раз и потом берутся из кеша браузера.">
+                  <option value="none">Без модели · словарь</option>
                   <option value="accurate">Точно · 3 модели</option>
                   <option value="fast">Быстро · 1 модель</option>
                 </select>
@@ -47,7 +59,7 @@
               <table id="found">
                 <thead>
                   <tr>
-                    <th class="c"><label class="hit" title="Заменить все показанные (у компаний и мест замену придумываете вы)"><input type="checkbox" id="foundAll" aria-label="Заменить все показанные" /></label></th>
+                    <th class="c"><label class="hit" title="Заменить все показанные (у мест замену придумываете вы)"><input type="checkbox" id="foundAll" aria-label="Заменить все показанные" /></label></th>
                     <th aria-sort="none"><button class="th" data-sort="type">Тип</button></th>
                     <th aria-sort="none"><button class="th" data-sort="word">Слово</button></th>
                     <th aria-sort="none" class="n"><button class="th" data-sort="n" aria-label="Сколько раз встречается" title="Сколько раз встречается">×</button></th>
@@ -79,26 +91,57 @@
           </aside>
           <div id="split" class="split" role="separator" aria-orientation="vertical" aria-label="Ширина списка «Можно заменить»" tabindex="0" title="Потяните, чтобы изменить ширину. Двойной клик — вернуть как было"></div>
           <div class="card">
-            <div class="toolbar">
-              <button id="paste" class="small">Вставить</button>
-              <button id="open" class="small" title="Или перетащите файл в окно">Открыть файл</button>
-              <input id="file" type="file" multiple hidden />
-              <button id="example" class="small">Пример</button>
-              <button id="clear" class="small">Очистить</button>
+            <div id="tabs" class="tabs" role="tablist" hidden>
+              <button role="tab" data-tab="prompt" aria-selected="true">Промпт</button>
+              <button role="tab" data-tab="reply" aria-selected="false">Ответ</button>
+              <button role="tab" data-tab="history" aria-selected="false">История</button>
               <span class="spacer"></span>
-              <span class="muted small-text">Выделите слово в тексте или наведите на подчёркнутое — появится поле замены</span>
+              <label id="instrBox" class="check small-text" title="В начало скопированного текста добавляется строка о том, как обращаться с тегами и как писать падеж"><input type="checkbox" id="instr" checked /> с инструкцией для нейросети</label>
             </div>
-            <div class="editor-wrap">
-              <div id="diffHide" class="editor"></div>
-              <div id="emptyHide" class="empty">
-                <h3>Вставьте текст</h3>
-                <p>Письмо, переписку или документ. Имена, компании и секреты подчеркнутся — замените то, что нужно, на что хотите. Или перетащите сюда файл: .txt, .srt, .md, .csv и любой другой текстовый. Всё работает в браузере, ничего не отправляется.</p>
-                <div class="row">
-                  <button id="emptyPaste" class="primary">Вставить из буфера</button>
-                  <button id="emptyOpen">Открыть файл</button>
-                  <button id="emptyExample">Показать пример</button>
+
+            <div id="promptPane" class="tab-pane">
+              <div class="toolbar">
+                <button id="paste" class="small">Вставить</button>
+                <button id="open" class="small" title="Или перетащите файл в окно">Открыть файл</button>
+                <input id="file" type="file" multiple hidden />
+                <button id="example" class="small">Пример</button>
+                <button id="clear" class="small">Очистить</button>
+                <span class="spacer"></span>
+                <span class="muted small-text">Выделите слово в тексте или наведите на подчёркнутое — появится поле замены</span>
+              </div>
+              <div class="editor-wrap">
+                <div id="diffHide" class="editor"></div>
+                <div id="emptyHide" class="empty">
+                  <h3>Вставьте текст</h3>
+                  <p>Письмо, переписку или документ. Имена и секреты подчеркнутся — замените то, что нужно, на что хотите. Или перетащите сюда файл: .txt, .srt, .md, .csv и любой другой текстовый. Всё работает в браузере, ничего не отправляется.</p>
+                  <div class="row">
+                    <button id="emptyPaste" class="primary">Вставить из буфера</button>
+                    <button id="emptyOpen">Открыть файл</button>
+                    <button id="emptyExample">Показать пример</button>
+                  </div>
                 </div>
               </div>
+            </div>
+
+            <div id="replyPane" class="tab-pane" hidden>
+              <div class="toolbar">
+                <button id="replyPaste" class="small">Вставить ответ</button>
+                <button id="replyClear" class="small">Очистить</button>
+                <span class="spacer"></span>
+                <span id="replyNote" class="muted small-text"></span>
+              </div>
+              <div class="editor-wrap">
+                <div id="diffReply" class="editor"></div>
+                <div id="emptyReply" class="empty">
+                  <h3>Вставьте ответ нейросети</h3>
+                  <p>Теги вернутся словами: «Передайте [PERSON_1|ю]» станет «Передайте Андрею». Слева ответ как есть, справа с именами. Подчёркнутое жёлтым стоит проверить.</p>
+                  <div class="row"><button id="emptyReplyPaste" class="primary">Вставить из буфера</button></div>
+                </div>
+              </div>
+            </div>
+
+            <div id="historyPane" class="tab-pane" hidden>
+              <ul id="history" class="history" data-empty="Пока пусто. Промпты и ответы появятся здесь, когда вы их скопируете."></ul>
             </div>
           </div>
 
